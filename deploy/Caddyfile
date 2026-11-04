@@ -2,9 +2,12 @@
 {$SITE_ADDRESS} {
 	encode gzip
 
-	# 後端 API、上傳圖片、Swagger 轉給 Spring Boot
+	# 後端 API、上傳圖片、Swagger 轉給 Spring Boot。
+	# 注意：必須用 handle 包起來，否則 Caddy 的指令排序會讓下面的 catch-all handle 先接走所有請求。
 	@backend path /api/* /images/* /swagger-ui/* /v3/api-docs*
-	reverse_proxy @backend api:8081
+	handle @backend {
+		reverse_proxy api:8081
+	}
 
 	# 其餘為 Angular 靜態檔；找不到的路徑回 index.html（SPA 路由）
 	handle {
