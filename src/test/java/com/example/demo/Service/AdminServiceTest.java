@@ -189,6 +189,106 @@ class AdminServiceTest {
         verifyNoInteractions(logRepo);
     }
 
+    // ---------- 批次停用/恢復 ----------
+
+    private void stubBatchAdmin() {
+        ReflectionTestUtils.setField(service, "transactionManager",
+                org.mockito.Mockito.mock(org.springframework.transaction.PlatformTransactionManager.class));
+        when(userRepo.findAdminLookupByEmailAndRole("op@test.com", Role.ADMIN))
+                .thenReturn(Optional.of(new AdminLookupProjection(9L, "管理員小明")));
+    }
+
+    private User userWithRole(Role role) {
+        User u = new User();
+        u.setRole(role);
+        return u;
+    }
+
+    @Test void batchDisableRequiresReason() {
+        assertThatThrownBy(() -> service.batchChangeUserAccountStatus(
+                java.util.List.of(1L), true, "  ", "op@test.com", Role.ADMIN))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("請填寫操作原因");
+        verifyNoInteractions(userRepo, logRepo);
+    }
+
+    @Test void batchDisableRequiresAtLeastOneUser() {
+        assertThatThrownBy(() -> service.batchChangeUserAccountStatus(
+                java.util.List.of(), true, "違規", "op@test.com", Role.ADMIN))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("請至少選擇一位使用者");
+    }
+
+    @Test void batchDisableReportsSuccessAndFailurePerUserAndLogsOnlySuccess() {
+        stubBatchAdmin();
+        when(userRepo.getReferenceById(9L)).thenReturn(new User());
+        // 1: 正常 -> 成功
+        when(userRepo.findAccountStatusById(1L))
+                .thenReturn(Optional.of(new UserAccountStatusProjection(1L, UserStatus.ACTIVE, "a@test.com", "小華")));
+        when(userRepo.findById(1L)).thenReturn(Optional.of(userWithRole(Role.VENDOR)));
+        when(userRepo.updateStatusIfCurrent(1L, UserStatus.ACTIVE, UserStatus.DISABLED)).thenReturn(1);
+        // 2: 已停用 -> 失敗
+        when(userRepo.findAccountStatusById(2L))
+                .thenReturn(Optional.of(new UserAccountStatusProjection(2L, UserStatus.DISABLED, "b@test.com", null)));
+        when(userRepo.findById(2L)).thenReturn(Optional.of(userWithRole(Role.VENDOR)));
+        // 3: 不存在 -> 失敗
+        when(userRepo.findAccountStatusById(3L)).thenReturn(Optional.empty());
+        // 4: 管理員 -> 失敗
+        when(userRepo.findAccountStatusById(4L))
+                .thenReturn(Optional.of(new UserAccountStatusProjection(4L, UserStatus.ACTIVE, "adm@test.com", "其他管理員")));
+        when(userRepo.findById(4L)).thenReturn(Optional.of(userWithRole(Role.ADMIN)));
+        // 9: 自己 -> 失敗
+        when(userRepo.findAccountStatusById(9L))
+                .thenReturn(Optional.of(new UserAccountStatusProjection(9L, UserStatus.ACTIVE, "op@test.com", "管理員小明")));
+
+        var result = service.batchChangeUserAccountStatus(
+                java.util.List.of(1L, 2L, 3L, 4L, 9L, 1L), true, " 違反規範 ", "op@test.com", Role.ADMIN);
+
+        assertThat(result.succeeded()).hasSize(1);
+        assertThat(result.succeeded().get(0).id()).isEqualTo(1L);
+        assertThat(result.succeeded().get(0).newAccountStatus()).isEqualTo(UserStatus.DISABLED);
+        assertThat(result.failed()).extracting("id").containsExactly(2L, 3L, 4L, 9L);
+        assertThat(result.failed().get(1).reason()).isEqualTo("找不到指定的帳號");
+
+        ArgumentCaptor<AdminOperationLog> captor = ArgumentCaptor.forClass(AdminOperationLog.class);
+        verify(logRepo, org.mockito.Mockito.times(1)).save(captor.capture());
+        assertThat(captor.getValue().getOperationType()).isEqualTo(AdminOperationType.ACCOUNT_DISABLED);
+        assertThat(captor.getValue().getContent()).isEqualTo("管理員小明批次停用小華的帳號，原因：違反規範");
+    }
+
+    @Test void batchRestoreRestoresDisabledUser() {
+        stubBatchAdmin();
+        when(userRepo.getReferenceById(9L)).thenReturn(new User());
+        when(userRepo.findAccountStatusById(1L))
+                .thenReturn(Optional.of(new UserAccountStatusProjection(1L, UserStatus.DISABLED, "a@test.com", "小華")));
+        when(userRepo.findById(1L)).thenReturn(Optional.of(userWithRole(Role.VENDOR)));
+        when(userRepo.updateStatusIfCurrent(1L, UserStatus.DISABLED, UserStatus.ACTIVE)).thenReturn(1);
+
+        var result = service.batchChangeUserAccountStatus(
+                java.util.List.of(1L), false, "申訴通過", "op@test.com", Role.ADMIN);
+
+        assertThat(result.failed()).isEmpty();
+        assertThat(result.succeeded().get(0).newAccountStatus()).isEqualTo(UserStatus.ACTIVE);
+        ArgumentCaptor<AdminOperationLog> captor = ArgumentCaptor.forClass(AdminOperationLog.class);
+        verify(logRepo).save(captor.capture());
+        assertThat(captor.getValue().getOperationType()).isEqualTo(AdminOperationType.ACCOUNT_RESTORED);
+    }
+
+    @Test void batchDisableTreatsConcurrentStatusChangeAsFailure() {
+        stubBatchAdmin();
+        when(userRepo.findAccountStatusById(1L))
+                .thenReturn(Optional.of(new UserAccountStatusProjection(1L, UserStatus.ACTIVE, "a@test.com", "小華")));
+        when(userRepo.findById(1L)).thenReturn(Optional.of(userWithRole(Role.VENDOR)));
+        when(userRepo.updateStatusIfCurrent(1L, UserStatus.ACTIVE, UserStatus.DISABLED)).thenReturn(0);
+
+        var result = service.batchChangeUserAccountStatus(
+                java.util.List.of(1L), true, "違規", "op@test.com", Role.ADMIN);
+
+        assertThat(result.succeeded()).isEmpty();
+        assertThat(result.failed()).hasSize(1);
+        verifyNoInteractions(logRepo);
+    }
+
     @Test void setUserAccountDisableFallsBackToEmailWhenContactNameMissing() {
         when(userRepo.findAdminLookupByEmailAndRole("op@test.com", Role.ADMIN))
                 .thenReturn(Optional.of(new AdminLookupProjection(9L, "管理員小明")));
