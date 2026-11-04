@@ -17,6 +17,7 @@ import com.example.demo.dto.request.admin.AdminLogsSearchRequest;
 import com.example.demo.dto.request.admin.AdminNoticeSearchRequest;
 import com.example.demo.dto.request.admin.AdminUserSearchDto;
 import com.example.demo.dto.request.admin.AdminUserSearchRequest;
+import com.example.demo.dto.request.admin.BatchUserStatusRequest;
 import com.example.demo.dto.request.admin.EventRevisionRequest;
 import com.example.demo.dto.response.ApiResponse;
 import com.example.demo.dto.response.admin.AdminDashboardDto;
@@ -534,6 +535,42 @@ public class AdminController {
             return ApiResponse.fail(e.getMessage());
         } catch (Exception e) {
             return ApiResponse.fail("使用者帳號復原失敗");
+        }
+    }
+
+    @Operation(summary = "使用者帳號批次停用", description = "一次停用多位使用者(需填原因)，逐筆處理並回傳成功與失敗明細。")
+    @PostMapping("/users/batch-disable")
+    public ApiResponse<?> batchDisableUsers(
+            @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+            @RequestBody(required = false) BatchUserStatusRequest request) {
+        return batchChangeUsers(authorizationHeader, request, true);
+    }
+
+    @Operation(summary = "使用者帳號批次恢復", description = "一次恢復多位使用者(需填原因)，逐筆處理並回傳成功與失敗明細。")
+    @PostMapping("/users/batch-restore")
+    public ApiResponse<?> batchRestoreUsers(
+            @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+            @RequestBody(required = false) BatchUserStatusRequest request) {
+        return batchChangeUsers(authorizationHeader, request, false);
+    }
+
+    private ApiResponse<?> batchChangeUsers(String authorizationHeader, BatchUserStatusRequest request, boolean disable) {
+        if (request == null) {
+            return ApiResponse.fail("請提供使用者id與原因");
+        }
+        String token = jwtService.extractTokenFromAuthorizationHeader(authorizationHeader);
+        if (token == null || token.isBlank() || !jwtService.isTokenValid(token)) {
+            return ApiResponse.fail("驗證憑證無效或已過期");
+        }
+        try {
+            String operatorEmail = jwtService.getEmail(token);
+            Role operatorRole = Role.fromRole(jwtService.getRole(token));
+            return ApiResponse.success("ok", service.batchChangeUserAccountStatus(
+                    request.userIds(), disable, request.reason(), operatorEmail, operatorRole));
+        } catch (IllegalArgumentException e) {
+            return ApiResponse.fail(e.getMessage());
+        } catch (Exception e) {
+            return ApiResponse.fail(disable ? "使用者批次停用失敗" : "使用者批次恢復失敗");
         }
     }
 
