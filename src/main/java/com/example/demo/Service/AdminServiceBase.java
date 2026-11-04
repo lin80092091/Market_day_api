@@ -69,6 +69,10 @@ public abstract class AdminServiceBase {
         /** 設定使用者帳號復原 */
         public abstract UserStatusChangeDto setUserAccountRestore(Long userId, String operatorEmail, Role operatorRole);
 
+        /** 批次停用(disable=true)或恢復(disable=false)使用者帳號，逐筆處理並回傳成功/失敗明細 */
+        public abstract com.example.demo.dto.response.admin.BatchUserStatusResultDto batchChangeUserAccountStatus(
+                java.util.List<Long> userIds, boolean disable, String reason, String operatorEmail, Role operatorRole);
+
         /** 設定活動審核通過 */
         public abstract EventStatusChangeDto setEventApprove(Long userId, String operatorEmail, Role operatorRole, String note);
 

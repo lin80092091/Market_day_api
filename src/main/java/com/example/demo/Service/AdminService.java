@@ -44,6 +44,9 @@ import com.example.demo.Repository.projection.admin.EventUnpublishReasonProjecti
 import com.example.demo.Repository.projection.admin.EventUnpublishReviewProjection;
 import com.example.demo.Repository.projection.admin.RefundProjection;
 import com.example.demo.Repository.projection.admin.UserAccountStatusProjection;
+import com.example.demo.dto.response.admin.BatchUserStatusResultDto;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import com.example.demo.Repository.projection.admin.UserLoginLogProjection;
 import com.example.demo.Repository.projection.admin.VenderRegApplicationProjection;
 import com.example.demo.Repository.specification.AdminLogSpecification;
@@ -97,6 +100,11 @@ import jakarta.persistence.Tuple;
 
 @Service
 public class AdminService extends AdminServiceBase implements EventStatusServiceInterface<Object> {
+    private static final int BATCH_REASON_MAX_LENGTH = 100;
+
+    @Autowired
+    PlatformTransactionManager transactionManager;
+
     @Autowired
     EventRepo eventRepo;
 
@@ -732,6 +740,90 @@ public class AdminService extends AdminServiceBase implements EventStatusService
                 userId, targetLabel, admin.adminName() + "恢復" + targetLabel + "的帳號");
 
         return new UserStatusChangeDto(target.contactName(), target.email(), newStatus);
+    }
+
+    /**
+     * 批次停用/恢復使用者帳號。
+     * 每一筆各自在獨立交易中處理並各寫一筆操作紀錄，單筆失敗只會回滾該筆，不影響其他筆。
+     */
+    @Override
+    public BatchUserStatusResultDto batchChangeUserAccountStatus(
+            List<Long> userIds, boolean disable, String reason, String operatorEmail, Role operatorRole) {
+        if (userIds == null || userIds.isEmpty()) {
+            throw new IllegalArgumentException("請至少選擇一位使用者");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("請填寫操作原因");
+        }
+        String trimmedReason = reason.trim();
+        if (trimmedReason.length() > BATCH_REASON_MAX_LENGTH) {
+            throw new IllegalArgumentException("操作原因不可超過" + BATCH_REASON_MAX_LENGTH + "字");
+        }
+        AdminLookupProjection admin = validateAdminOperator(operatorEmail, operatorRole);
+
+        TransactionTemplate tx = new TransactionTemplate(transactionManager);
+        List<BatchUserStatusResultDto.Success> succeeded = new ArrayList<>();
+        List<BatchUserStatusResultDto.Failure> failed = new ArrayList<>();
+
+        // 去除重複id，保留使用者選擇的順序
+        for (Long userId : new java.util.LinkedHashSet<>(userIds)) {
+            try {
+                BatchUserStatusResultDto.Success ok =
+                        tx.execute(status -> changeOneUserStatus(userId, admin, disable, trimmedReason));
+                succeeded.add(ok);
+            } catch (BatchItemException e) {
+                failed.add(new BatchUserStatusResultDto.Failure(userId, e.label, e.getMessage()));
+            } catch (Exception e) {
+                failed.add(new BatchUserStatusResultDto.Failure(userId, null, "系統錯誤，此筆未處理"));
+            }
+        }
+        return new BatchUserStatusResultDto(succeeded, failed);
+    }
+
+    /** 單筆處理(須在交易中呼叫)；不符合條件時丟 BatchItemException，使該筆交易回滾 */
+    private BatchUserStatusResultDto.Success changeOneUserStatus(
+            Long userId, AdminLookupProjection admin, boolean disable, String reason) {
+        if (userId == null) {
+            throw new BatchItemException(null, "使用者id為空");
+        }
+        UserAccountStatusProjection target = userRepo.findAccountStatusById(userId)
+                .orElseThrow(() -> new BatchItemException(null, "找不到指定的帳號"));
+        String label = target.contactName() != null ? target.contactName() : target.email();
+
+        if (userId.equals(admin.id())) {
+            throw new BatchItemException(label, "不可變更自己的帳號狀態");
+        }
+        Role targetRole = userRepo.findById(userId).map(User::getRole).orElse(null);
+        if (targetRole == Role.ADMIN) {
+            throw new BatchItemException(label, "不可變更管理員帳號");
+        }
+
+        UserStatus from = disable ? UserStatus.ACTIVE : UserStatus.DISABLED;
+        UserStatus to = disable ? UserStatus.DISABLED : UserStatus.ACTIVE;
+        if (target.status() != from) {
+            throw new BatchItemException(label, disable ? "帳號不是正常狀態，無法停用" : "帳號不是停用狀態，無法恢復");
+        }
+        // 條件式更新：狀態已被別人改過時影響筆數為 0
+        if (userRepo.updateStatusIfCurrent(userId, from, to) != 1) {
+            throw new BatchItemException(label, "帳號狀態已變更，請重新載入後再操作");
+        }
+
+        saveAdminLog(
+                userRepo.getReferenceById(admin.id()),
+                disable ? AdminOperationType.ACCOUNT_DISABLED : AdminOperationType.ACCOUNT_RESTORED,
+                AdminTargetType.USER, userId, label,
+                admin.adminName() + (disable ? "批次停用" : "批次恢復") + label + "的帳號，原因：" + reason);
+        return new BatchUserStatusResultDto.Success(userId, label, to);
+    }
+
+    /** 批次單筆失敗的內部例外，帶出顯示名稱供結果畫面使用 */
+    private static class BatchItemException extends RuntimeException {
+        private final String label;
+
+        BatchItemException(String label, String message) {
+            super(message);
+            this.label = label;
+        }
     }
 
     @Override
