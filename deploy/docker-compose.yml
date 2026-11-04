@@ -1,0 +1,88 @@
+# 用法：cp .env.example .env（填入實際值）→ docker compose up -d --build
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - dbdata:/var/opt/mssql
+    # 不對外開 1433，只有 compose 內部網路能連
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # 一次性初始化：資料庫不存在才建立（MarketDayDB.sql 會 DROP 重建，不可重複執行）
+  db-init:
+    image: mcr.microsoft.com/mssql-tools
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./db-init.sh:/db-init.sh:ro
+      - ./sql:/sql:ro
+    entrypoint: ["bash", "/db-init.sh"]
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      DB_URL: jdbc:sqlserver://db:1433;databaseName=MarketDayDB;encrypt=true;trustServerCertificate=true
+      DB_USERNAME: sa
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_NAME: ${ADMIN_NAME:-Admin}
+      PAYMENT_CREDENTIAL_ENCRYPTION_KEY: ${PAYMENT_CREDENTIAL_ENCRYPTION_KEY}
+      FRONTEND_URL: https://${SITE_ADDRESS}
+      IMAGE_PUBLIC_BASE_URL: https://${SITE_ADDRESS}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      NEWEBPAY_MERCHANT_ID: ${NEWEBPAY_MERCHANT_ID:-}
+      NEWEBPAY_HASH_KEY: ${NEWEBPAY_HASH_KEY:-}
+      NEWEBPAY_HASH_IV: ${NEWEBPAY_HASH_IV:-}
+      NEWEBPAY_NOTIFY_URL: https://${SITE_ADDRESS}/api/newebpay/notify
+      NEWEBPAY_RETURN_URL: https://${SITE_ADDRESS}/api/newebpay/return
+      NEWEBPAY_ORGANIZER_VERIFICATION_RETURN_URL: https://${SITE_ADDRESS}/api/newebpay/organizer-verification/return
+    volumes:
+      - images:/app/images
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        FRONTEND_REPO: ${FRONTEND_REPO:-https://github.com/lin80092091/market_day.git}
+        FRONTEND_REF: ${FRONTEND_REF:-feature/batch-user-status}
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  dbdata:
+  images:
+  caddy_data:
+  caddy_config:

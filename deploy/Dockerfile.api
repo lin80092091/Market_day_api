@@ -1,0 +1,16 @@
+# ---- build stage：用 Maven 打包 Spring Boot jar（跳過測試，測試在開發時已跑過）----
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /src
+COPY pom.xml ./
+RUN mvn -q -B dependency:go-offline
+COPY src ./src
+RUN mvn -q -B -DskipTests package
+
+# ---- runtime stage：只帶 JRE 與 jar ----
+FROM eclipse-temurin:21-jre
+WORKDIR /app
+COPY --from=build /src/target/*.jar app.jar
+# 使用者上傳的圖片放在 /app/images，由 compose 掛成 volume
+RUN mkdir -p /app/images
+EXPOSE 8081
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

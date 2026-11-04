@@ -1,0 +1,13 @@
+# ---- build stage：從 GitHub 拉前端 fork 並 build（apiBaseUrl 已是同源 '/'）----
+FROM node:22 AS build
+ARG FRONTEND_REPO=https://github.com/lin80092091/market_day.git
+ARG FRONTEND_REF=feature/batch-user-status
+WORKDIR /app
+RUN git clone --depth 1 --branch ${FRONTEND_REF} ${FRONTEND_REPO} .
+RUN npm ci
+RUN npx ng build --configuration production
+
+# ---- runtime stage：Caddy 提供靜態檔、反向代理 /api，並自動申請 HTTPS 憑證 ----
+FROM caddy:2
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /app/dist/market_day/browser /srv

@@ -1,0 +1,15 @@
+# SITE_ADDRESS 由 .env 提供，例如 34-80-1-2.sslip.io（Caddy 會自動向 Let's Encrypt 申請憑證）
+{$SITE_ADDRESS} {
+	encode gzip
+
+	# 後端 API、上傳圖片、Swagger 轉給 Spring Boot
+	@backend path /api/* /images/* /swagger-ui/* /v3/api-docs*
+	reverse_proxy @backend api:8081
+
+	# 其餘為 Angular 靜態檔；找不到的路徑回 index.html（SPA 路由）
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
