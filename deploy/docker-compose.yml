@@ -41,6 +41,8 @@ services:
         condition: service_completed_successfully
     environment:
       DB_URL: jdbc:sqlserver://db:1433;databaseName=MarketDayDB;encrypt=true;trustServerCertificate=true
+      # 信任 Caddy 的 X-Forwarded-Proto，讓 Spring 把 https 同源請求視為同源，避免被 CORS 擋成 403
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
       DB_USERNAME: sa
       DB_PASSWORD: ${DB_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
