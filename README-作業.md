@@ -9,7 +9,7 @@
 |---|---|
 | 外部網址（管理員端） | https://35-201-183-110.sslip.io/admin/login |
 | 管理員測試帳號 | `admin@marketday.local` |
-| 管理員測試密碼 | `a12345678`（原專案資料庫腳本內建的預設帳號，密碼本來就寫在 Swagger 範例中） |
+| 管理員測試密碼 | `a12345678` |
 | 後端 fork | https://github.com/lin80092091/Market_day_api（分支 `feature/batch-user-status`、`deploy/gcp`） |
 | 前端 fork | https://github.com/lin80092091/market_day（分支 `feature/batch-user-status`） |
 | 資料庫 | 沿用 SQL Server（資料庫腳本 repo 未修改） |
@@ -17,7 +17,7 @@
 > 網址僅在展示期間開放，展示結束後會刪除雲端 VM 以停止計費。
 
 ### 資料庫沿用 SQL Server 的原因
-後端大量使用 SQL Server 專屬語法（如 `SYSDATETIME()`、`TOP`），且資料庫腳本 `MarketDayDB.sql` 約 60KB。換成其他資料庫必須改寫所有相關查詢，風險高、與「只改需要改的地方」的原則相違，因此不換。
+後端大量使用 SQL Server 專屬語法，換成其他資料庫必須改寫所有相關查詢，所以不換。
 
 ## 2. 新功能：使用者批次停用／恢復
 
@@ -88,7 +88,7 @@ Google 的免費額度不含 Cloud SQL for SQL Server，所以資料庫也放在
 ### 規則（`.claude/CLAUDE.md` 全文）
 ```
 - 有任何不確定的地方都要先和我確認
-- 寫給我的計畫書一慮使用中文撰寫
+- 寫給我的計畫書一律使用中文撰寫
 - 修改程式碼時僅做手術式修改，不要順手重構無關的檔案。
 - 在commit之前要先編譯成功過
 ```
@@ -102,24 +102,25 @@ Google 的免費額度不含 Cloud SQL for SQL Server，所以資料庫也放在
 - **commit 前先編譯**：後端 `mvn compile` 與單元測試、前端 `ng build` 通過後才 commit，commit 依步驟分次提交，可以在 git 歷史看到開發過程。
 - **推送前先問**：推送到 GitHub 屬於對外動作，每次都先取得同意。
 
-### AI 做過頭的一次
-調整勾選框大小時，AI 另外加了 `accent-color`（勾選後的顏色），我沒有要求。AI 事後主動說明並詢問是否保留，這是「不要順手多做」規則的實際例子。
-
 ## 5. 我搞懂了什麼
-
-> 請用自己的話填寫：這段程式在做什麼、為什麼這樣寫。至少一段是這次新寫的。
 
 ### 5.1 批次停用：每位使用者各自一個交易（新寫）
 位置：[AdminService.java](src/main/java/com/example/demo/Service/AdminService.java) 的 `batchChangeUserAccountStatus` 與 `changeOneUserStatus`
 
-（待填寫）
+這段程式處理批次停用功能，須滿足以下條件：批次處理時每一筆都要是單獨的交易，失敗會單獨回滾並把原因放進回傳結果給畫面顯示，成功可以在管理員操作紀錄中找到紀錄。
+
+先用`if`擋掉沒選user、沒寫原因、原因超過字數的情況，再進行後續處理。用`LinkedHashSet`去除重複id，並保留使用者選擇的順序，並以`TransactionTemplate`取代 `@Transactional`，讓每一筆可以單獨處理，並用`try catch`來抓預期的失敗（有人名與原因）和預期外的錯誤，避免一筆失敗就讓整批中斷，分別將成功與失敗的情況加入對應的`ArrayList`方便畫面顯示，最後用`Dto`回傳。
 
 ### 5.2 條件式更新 `updateStatusIfCurrent`（原有）
 位置：[UserRepo.java](src/main/java/com/example/demo/Repository/UserRepo.java)
 
-（待填寫）
+這段用來更新使用者帳號狀態，使用和其他Repo相同的`@Query`的寫法。為了避免兩人同時操作時，狀態在檢查後被別人改掉，把檢查和修改放同一句 SQL，只有狀態符合預期的時候才進行修改，回傳影響筆數方便後續使用時可以檢查成功與否。
 
 ### 5.3 資料庫初始化腳本 `db-init.sh`（部署）
 位置：[deploy/db-init.sh](deploy/db-init.sh)
 
-（待填寫）
+- 這個腳本是在VM中由`docker-compose.yml`呼叫，在SQL Server啟動後執行，將資料庫初始化後，再啟動 api，最後啟動 web。
+- 因為每次`docker compose up -d`都會執行，所以設定只有資料庫不存在時才執行建庫腳本，如果已經有就跳過，避免腳本`DROP`掉資料庫清掉資料，並設定結束碼為0。
+- 使用`set -e`設定任何指令失敗就停止腳本，並搭配 `-b` 讓SQL出錯時回傳非0的結束碼來讓`set -e`偵測。
+- 在本機用 Docker 試建時失敗，請AI查看錯誤後發現因為`sqlcmd`預設關閉`QUOTED_IDENTIFIER`，所以建立篩選索引失敗，補上 `-I`，並用`trap cleanup_on_failure ERR`來清除建到一半的資料庫，避免下一次部署時誤以為初始化已經完成。
+- 檢查資料庫不存在後，執行建庫的SQL腳本，成功結束碼為0，啟動`api`，失敗觸發`trap cleanup_on_failure ERR`，結束碼非0，不啟動`api`。
